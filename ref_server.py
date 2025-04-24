@@ -1,4 +1,3 @@
-
 import json, os, shutil, re, random, io, time
 import torch
 
@@ -6,8 +5,10 @@ def tensor_to_bytes(t):
     buffer = io.BytesIO()
     torch.save(t, buffer)
     return buffer.getvalue()
+
 def bytes_to_tensor(b):
     return torch.load(io.BytesIO(b), weights_only=True)
+
 def make_bytes_list(blist):
     buffer = io.BytesIO()
     buffer.write(len(blist).to_bytes(4, 'big'))
@@ -15,6 +16,7 @@ def make_bytes_list(blist):
         buffer.write(len(b).to_bytes(4, 'big'))
         buffer.write(b)
     return buffer.getvalue()
+
 def bytes_list_to_list(b):
     buffer = io.BytesIO(b)
     num = int.from_bytes(buffer.read(4), 'big')
@@ -35,15 +37,21 @@ if __name__ == '__main__':
 
     model_path = "/data2/Qwen/Qwen2.5-3B"
 
-    ref_model = AutoModelForCausalLM.from_pretrained(model_path,
-            torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')
+    # ✅ FIX: Local model loading
+    ref_model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        _attn_implementation="sdpa",
+        local_files_only=True
+    ).to('cuda')
+    
     ref_model.eval()
     ref_model.requires_grad_(False)
 
     def get_per_token_logps(input_ids):
         logits = ref_model(input_ids).logits  # (B, L, V)
-        logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-        input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it
+        logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit
+        input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID
         per_token_logps = []
         for logits_row, input_ids_row in zip(logits, input_ids):
             log_probs = logits_row.log_softmax(dim=-1)
