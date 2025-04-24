@@ -35,23 +35,25 @@ if __name__ == '__main__':
     import bottle, threading, queue
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
+    # ✅ Set model path to local directory
     model_path = "/data2/Qwen/Qwen2.5-3B"
 
-    # ✅ FIX: Local model loading
+    # ✅ Load model from local path with correct flags
     ref_model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         _attn_implementation="sdpa",
-        local_files_only=True
+        trust_remote_code=True,      # ✅ Required for custom/model-specific code
+        local_files_only=True        # ✅ Do not try to fetch from HuggingFace hub
     ).to('cuda')
-    
+
     ref_model.eval()
     ref_model.requires_grad_(False)
 
     def get_per_token_logps(input_ids):
         logits = ref_model(input_ids).logits  # (B, L, V)
-        logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit
-        input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID
+        logits = logits[:, :-1, :]  # (B, L-1, V)
+        input_ids = input_ids[:, 1:]  # (B, L-1)
         per_token_logps = []
         for logits_row, input_ids_row in zip(logits, input_ids):
             log_probs = logits_row.log_softmax(dim=-1)
@@ -68,8 +70,8 @@ if __name__ == '__main__':
     def do_upload():
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
-        if len(dd) not in (3,4): return b'tensor'
-        data = {'base': json.loads(dd[0])} 
+        if len(dd) not in (3, 4): return b'tensor'
+        data = {'base': json.loads(dd[0])}
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
         if len(dd) == 4: data['gen_logps'] = bytes_to_tensor(dd[3])
@@ -82,7 +84,7 @@ if __name__ == '__main__':
     def do_get():
         if result_queue.empty(): return b'empty'
         return result_queue.get()
-    
+
     def run_server(): bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
     threading.Thread(target=run_server, daemon=False).start()
 
@@ -91,8 +93,8 @@ if __name__ == '__main__':
         prompt_length = d['base']['plen']
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
-        per_token_logps = per_token_logps[:,prompt_length-1:]
-        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']), 
+        per_token_logps = per_token_logps[:, prompt_length - 1:]
+        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']),
                 tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
         if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
         xdata = make_bytes_list(data)
