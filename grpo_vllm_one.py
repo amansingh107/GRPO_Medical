@@ -9,7 +9,7 @@ from tqdm import tqdm
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 model_path = "/data2/Qwen/Qwen2.5-3B"
-gen_device = 4    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device = 1    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 1000
 Q_batch_size = 5
