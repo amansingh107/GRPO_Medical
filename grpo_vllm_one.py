@@ -83,41 +83,18 @@ ds_config = {
     }
 }
 
-# Create save directory if it doesn't exist
-os.makedirs("./checkpoints", exist_ok=True)
-
 def get_batch():
-    global ref_server, alternative_ref_server
-    
-    # Try primary server
     try:
-        r = requests.get(f"{ref_server}/get", timeout=5).content
+        r = requests.get(f"{ref_server}/get").content
         if r == b'empty': return None
-    except requests.exceptions.RequestException:
-        print(f"Could not connect to {ref_server}")
-        # Try alternative server
-        try:
-            print(f"Trying alternative server {alternative_ref_server}")
-            r = requests.get(f"{alternative_ref_server}/get", timeout=5).content
-            if r == b'empty': return None
-            # If successful, switch to alternative server
-            ref_server = alternative_ref_server
-            print(f"Switched to alternative server: {ref_server}")
-        except:
-            print("Could not connect to any reference server")
-            return None
-    
-    try:
-        dd = bytes_list_to_list(r)
-        data = json.loads(dd[0]) 
-        data['inputs'] = bytes_to_tensor(dd[1])
-        data['rewards'] = bytes_to_tensor(dd[2])
-        data['refs'] = bytes_to_tensor(dd[3])
-        if len(dd) == 5: data['gen_logps'] = bytes_to_tensor(dd[4])
-        return data
-    except Exception as e:
-        print(f"Error processing batch: {e}")
-        return None
+    except: return None
+    dd = bytes_list_to_list(r)
+    data = json.loads(dd[0]) 
+    data['inputs'] = bytes_to_tensor(dd[1])
+    data['rewards'] = bytes_to_tensor(dd[2])
+    data['refs'] = bytes_to_tensor(dd[3])
+    if len(dd) == 5: data['gen_logps'] = bytes_to_tensor(dd[4])
+    return data
 
 def get_per_token_logps(logits, input_ids):
     per_token_logps = [] # Use a loop to reduce memory peak.
@@ -157,115 +134,48 @@ def gen_worker(Q, physics_device):
     os.environ["CUDA_VISIBLE_DEVICES"] = f'{physics_device}'
     torch.cuda.set_device(0)
     print(f"Generation worker process uses GPU {physics_device}")
-    
-    # Import vLLM here to ensure it uses the correct GPU
-    try:
-        from vllm import LLM, SamplingParams
-    except ImportError:
-        print("vLLM not installed. Installing now...")
-        os.system("pip install vllm")
-        from vllm import LLM, SamplingParams
-    
-    # Try loading the model with vLLM
-    try:
-        vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.5)
-    except Exception as e:
-        print(f"Error loading model with vLLM: {e}")
-        print("Trying with alternative parameters...")
-        try:
-            vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.3, max_model_len=2048)
-        except Exception as e2:
-            print(f"Second attempt failed: {e2}")
-            print("Trying to download model from Hugging Face...")
-            try:
-                vllm_gen = LLM(model="Qwen/Qwen2.5-3B", gpu_memory_utilization=0.3)
-            except Exception as e3:
-                print(f"All attempts failed: {e3}")
-                print("Exiting generation worker.")
-                return
-    
+    from vllm import LLM, SamplingParams
+    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.5)
     ref_server_ver = 'tensor'  # don't worry, it will auto switch based on the first upload
 
     sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=700)
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
 
-    # Load medical dataset
-    try:
-        from datasets import load_dataset
-        print("Loading medical dataset...")
-        dataset = load_dataset("ruslanmv/ai-medical-chatbot", split="train")
-        QAs = [{'Q': item['Patient'], 'A': item['Doctor']} for item in dataset]
-        print(f"Loaded {len(QAs)} QA pairs")
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        print("Creating a small fallback dataset")
-        # Fallback dataset in case of loading issues
-        QAs = [
-            {'Q': 'I have a headache and fever', 'A': 'You may have the flu. Rest and hydrate.'},
-            {'Q': 'My blood pressure is 140/90', 'A': 'Your blood pressure is slightly elevated.'},
-            {'Q': 'I have chest pain', 'A': 'Seek immediate medical attention.'},
-            {'Q': 'I have a cough for 2 weeks', 'A': 'You should see a doctor for persistent cough.'},
-            {'Q': 'My temperature is 101.5', 'A': 'You have a fever.'}
-        ]
+    from datasets import load_dataset
+    dataset = load_dataset("openai/gsm8k", "main", split="train")
+    QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
     
-    # Medical system prompt
-    system_prompt = """You are a medical assistant with expertise in healthcare. A conversation between Patient and Doctor. The patient asks a medical question, and the Doctor answers it. The Doctor first thinks about the diagnostic reasoning process and then provides the patient with the answer.
-    The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
-    
+    system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+    The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
     def gen_answers(prompts):
-        try:
-            tip_text = []
-            for x in prompts:
-                tip_text.append(tokenizer.apply_chat_template([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
-            voutputs = vllm_gen.generate(tip_text, sampling_params, use_tqdm=False)
-            answers = [];  ans_token_ids = []
-            for v in voutputs:
-                for z in v.outputs: 
-                    answers.append(z.text)
-                    ans_token_ids.append(z.token_ids)
-            return answers, ans_token_ids
-        except Exception as e:
-            print(f"Error in gen_answers: {e}")
-            # Return empty results to avoid crashing
-            return [""] * len(prompts) * num_pre_Q, [[0]] * len(prompts) * num_pre_Q
+        tip_text = []
+        for x in prompts:
+            tip_text.append(tokenizer.apply_chat_template([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
+        voutputs = vllm_gen.generate(tip_text, sampling_params, use_tqdm=False)
+        answers = [];  ans_token_ids = []
+        for v in voutputs:
+            for z in v.outputs: 
+                answers.append(z.text)
+                ans_token_ids.append(z.token_ids)
+        return answers, ans_token_ids
 
-    try:
-        from math_verify import parse, verify, ExprExtractionConfig
-    except ImportError:
-        print("math_verify module not found. Using simple reward functions.")
-        # Simple fallback reward functions
-        def reward_correct(item, answer):
-            if item["A"].lower() in answer.lower():
-                return 1
-            return -1
-            
-        def reward_format(item, answer):
-            pattern = r"<think>.*?</think>.*?<answer>.*?</answer>"
-            think_count = answer.count("<think>") + answer.count("</think>")
-            answer_count = answer.count("<answer>") + answer.count("</answer>")
-            return 1.25 if re.search(pattern, answer, re.DOTALL) and think_count==2 and answer_count==2 else -1
-    else:
-        # Original reward functions if module is available
-        def reward_correct(item, answer):
-            pattern = r'\d+\.\d+|\d+/\d+|\d+'
-            nums = re.findall(pattern, answer) 
-            if len(nums) == 0: return -1.0
-            lastnum = nums[-1]
-            try:
-                ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
-                ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
-                return 1 if verify(ans, ground_truth) else -1
-            except Exception as e:
-                print(f"Error in reward_correct: {e}")
-                return -1
-                
-        def reward_format(item, answer):
-            pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"
-            think_count = answer.count("<think>") + answer.count("</think>")
-            answer_count = answer.count("<answer>") + answer.count("</answer>")
-            return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) and think_count==2 and answer_count==2 else -1
+    from math_verify import parse, verify, ExprExtractionConfig
+    def reward_correct(item, answer):
+        pattern = r'\d+\.\d+|\d+/\d+|\d+'
+        nums = re.findall(pattern, answer) 
+        if len(nums) == 0: return -1.0
+        lastnum = nums[-1]
+        ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
+        ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
+        return 1 if verify(ans, ground_truth) else -1
+    def reward_format(item, answer):
+        pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"
+        think_count = answer.count("<think>") + answer.count("</think>")
+        answer_count = answer.count("<answer>") + answer.count("</answer>")
+        return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) and think_count==2 and answer_count==2 else -1
+
 
     def gen_samples(inputs):
         prompts = [x["Q"] for x in inputs]
@@ -282,227 +192,108 @@ def gen_worker(Q, physics_device):
     def try_update_model():
         try:
             new_state_dict = Q.get_nowait()
-            print('[VLLM PROC] receiving new model ...')
-            try:
-                llm_model = vllm_gen.llm_engine.model_executor.driver_worker.model_runner.model
-                llm_model.load_weights(new_state_dict.items())
-                print('[VLLM PROC] model updated')
-            except Exception as e:
-                print(f'[VLLM PROC] model update failed: {e}')
+            print('[VLLM PROC] recving new model ...')
+            llm_model = vllm_gen.llm_engine.model_executor.driver_worker.model_runner.model
+            llm_model.load_weights(new_state_dict.items())
+            print('[VLLM PROC] model updated')
             del new_state_dict
         except:
             #print('[VLLM PROC] no new model')
             return
         
     from torch.nn.utils.rnn import pad_sequence
-    
-    # Setup connection to both reference servers
-    global ref_server, alternative_ref_server
-    
     for it in range(999999999):
         if it % 3 == 0: try_update_model()
-        
-        # Handle potential errors during iteration
-        try:
-            inputs = random.sample(QAs, min(Q_batch_size, len(QAs)))
-            tic = time.time()
-            prompt_inputs, rewards, answers, ans_token_ids = gen_samples(inputs)
-            print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
-            if it % 5 == 0 and answers: print('answers:', answers[0])
+        inputs = random.sample(QAs, Q_batch_size)
+        tic = time.time()
+        prompt_inputs, rewards, answers, ans_token_ids = gen_samples(inputs)
+        print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
+        if it % 5 == 0: print('answers:', answers[0])
 
-            for i, pp in enumerate(prompt_inputs):
-                prompt_ids = tokenizer(pp, return_tensors="pt", add_special_tokens=False)["input_ids"]
-                plen = prompt_ids.shape[1]
-                curr_answers = answers[i*num_pre_Q:(i+1)*num_pre_Q]
-                curr_ans_ids = ans_token_ids[i*num_pre_Q:(i+1)*num_pre_Q]
-                curr_rewards = rewards[i*num_pre_Q:(i+1)*num_pre_Q]
-                if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
+        for i, pp in enumerate(prompt_inputs):
+            prompt_ids = tokenizer(pp, return_tensors="pt", add_special_tokens=False)["input_ids"]
+            plen = prompt_ids.shape[1]
+            curr_answers = answers[i*num_pre_Q:(i+1)*num_pre_Q]
+            curr_ans_ids = ans_token_ids[i*num_pre_Q:(i+1)*num_pre_Q]
+            curr_rewards = rewards[i*num_pre_Q:(i+1)*num_pre_Q]
+            if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
 
-                # Try both ref server versions
-                servers_to_try = [ref_server, alternative_ref_server]
-                
-                for current_server in servers_to_try:
-                    try:
-                        if ref_server_ver == 'tensor':
-                            curr_rewards = (curr_rewards - curr_rewards.mean()) / (curr_rewards.std() + 1e-4)
-                            for ii in range(0, num_pre_Q, train_batch_size):
-                                sub_rewards = curr_rewards[ii:ii+train_batch_size]
-                                sub_ans_ids = curr_ans_ids[ii:ii+train_batch_size]
-                                tensor_list = [torch.tensor(lst) for lst in sub_ans_ids]
-                                output_ids = pad_sequence(tensor_list, batch_first=True, padding_value=tokenizer.pad_token_id) 
-                                Qrep = prompt_ids.repeat(1, output_ids.shape[0]).view(-1, plen)
-                                merged_ids = torch.cat([Qrep, output_ids], dim=1)
-                                data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]       
+            if ref_server_ver == 'tensor':
+                curr_rewards = (curr_rewards - curr_rewards.mean()) / (curr_rewards.std() + 1e-4)
+                for ii in range(0, num_pre_Q, train_batch_size):
+                    sub_rewards = curr_rewards[ii:ii+train_batch_size]
+                    sub_ans_ids = curr_ans_ids[ii:ii+train_batch_size]
+                    tensor_list = [torch.tensor(lst) for lst in sub_ans_ids]
+                    output_ids = pad_sequence(tensor_list, batch_first=True, padding_value=tokenizer.pad_token_id) 
+                    Qrep = prompt_ids.repeat(1, output_ids.shape[0]).view(-1, plen)
+                    merged_ids = torch.cat([Qrep, output_ids], dim=1)
+                    data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]       
 
-                                if compute_gen_logps:
-                                    try:
-                                        zz = vllm_gen.generate(prompt_token_ids=merged_ids.tolist(), sampling_params=gen_logps_sp, use_tqdm=False)
-                                        zz = [xx.prompt_logprobs[plen:] for xx in zz]
-                                        gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
-                                        data.append(tensor_to_bytes(gen_logps))
-                                    except Exception as e:
-                                        print(f"Error computing gen_logps: {e}")
-                                        compute_gen_logps = False
+                    if compute_gen_logps:
+                        zz = vllm_gen.generate(prompt_token_ids=merged_ids.tolist(), sampling_params=gen_logps_sp, use_tqdm=False)
+                        zz = [xx.prompt_logprobs[plen:] for xx in zz]
+                        gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
+                        data.append(tensor_to_bytes(gen_logps))
 
-                                xdata = make_bytes_list(data)
-                                r = requests.post(f"{current_server}/upload", data=xdata, timeout=5)
-                                if r.content == b'string': ref_server_ver = 'string'
-                                # Update active server if successful
-                                ref_server = current_server
-                                break
-                        elif ref_server_ver == 'string':
-                            xdata = make_bytes_list([json.dumps({"Q": pp, "As": curr_answers}).encode(), 
-                                                    tensor_to_bytes(curr_rewards)])
-                            r = requests.post(f"{current_server}/upload", data=xdata, timeout=5)
-                            if r.content == b'tensor': ref_server_ver = 'tensor'
-                            # Update active server if successful
-                            ref_server = current_server
-                            break
-                    except Exception as e:
-                        print(f"Error with server {current_server}: {e}")
-                        # Try next server
-                        continue
-        except Exception as e:
-            print(f"Error in generation loop: {e}")
-            # Sleep a bit before retrying
-            time.sleep(5)
-            continue
+                    xdata = make_bytes_list(data)
+                    r = requests.post(f"{ref_server}/upload", data=xdata)
+                    if r.content == b'string': ref_server_ver = 'string'
+            elif ref_server_ver == 'string':
+                xdata = make_bytes_list([json.dumps({"Q": pp[0], "As": curr_answers}).encode(), 
+                                        tensor_to_bytes(curr_rewards)])
+                r = requests.post(f"{ref_server}/upload", data=xdata)
+                if r.content == b'tensor': ref_server_ver = 'tensor'
 
 
-# Load tokenizer with error handling
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-except Exception as e:
-    print(f"Error loading tokenizer from {model_path}: {e}")
-    print("Trying to load from Hugging Face...")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-3B")
-    except Exception as e2:
-        print(f"Failed to load tokenizer: {e2}")
-        sys.exit(1)
-
+tokenizer = AutoTokenizer.from_pretrained(model_path)
 if __name__ == '__main__':
     import deepspeed
-    try:
-        deepspeed.init_distributed()
-    except Exception as e:
-        print(f"Error initializing distributed training: {e}")
-        print("Falling back to single-GPU mode")
-        # Set environment variables for single-GPU mode
-        os.environ["RANK"] = "0"
-        os.environ["WORLD_SIZE"] = "1"
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "29500"
-        try:
-            deepspeed.init_distributed()
-        except Exception as e2:
-            print(f"Still couldn't initialize distributed environment: {e2}")
-            print("Will attempt to continue without distributed training")
+    deepspeed.init_distributed()
 
-    # Set up multiprocessing queue and launch generation worker
-    # Note: Only set the start method once - this is the fix to the error
-    mp.set_start_method('spawn', force=True)
-    
-    try:
-        if dist.is_initialized() and dist.get_rank() == 0:
-            print('\nSTART vLLM generation...\n')
-            Q = mp.Queue()
-            p = mp.Process(target=gen_worker, args=(Q, gen_device))
-            p.start()
-    except Exception as e:
-        print(f"Error setting up generation process: {e}")
-        print("Starting generation process directly")
+    if dist.get_rank() == 0:
+        print('\nSTART vLLM generation...\n')
+        mp.set_start_method('spawn')
         Q = mp.Queue()
         p = mp.Process(target=gen_worker, args=(Q, gen_device))
         p.start()
 
-    # Load model with error handling
-    try:
-        model = AutoModelForCausalLM.from_pretrained(model_path, 
-                torch_dtype=torch.bfloat16, _attn_implementation="sdpa")
-    except Exception as e:
-        print(f"Error loading model from {model_path}: {e}")
-        print("Trying to load from Hugging Face...")
-        try:
-            model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-3B", 
-                    torch_dtype=torch.bfloat16, _attn_implementation="sdpa")
-        except Exception as e2:
-            print(f"Failed to load model: {e2}")
-            sys.exit(1)
+    model = AutoModelForCausalLM.from_pretrained(model_path, 
+            torch_dtype=torch.bfloat16, _attn_implementation="sdpa")
 
-    try:
-        engine, optimizer, _, _ = deepspeed.initialize(config=ds_config, model=model, 
-                                                    model_parameters=model.parameters())
-    except Exception as e:
-        print(f"Error initializing DeepSpeed: {e}")
-        sys.exit(1)
-
-    try:
-        is_main_process = not dist.is_initialized() or dist.get_rank() == 0
-    except:
-        is_main_process = True
+    engine, optimizer, _, _ = deepspeed.initialize(config=ds_config, model=model, 
+                                                model_parameters=model.parameters())
 
     progress = range(1, all_steps+1)
-    if is_main_process: 
-        progress = tqdm(progress)
-        
+    if dist.get_rank() == 0: progress = tqdm(progress)
     for step in progress:
-        try:
+        batch = get_batch()
+        while batch is None:
+            print('waiting for batch...'); time.sleep(1)
             batch = get_batch()
-            wait_count = 0
-            while batch is None:
-                wait_count += 1
-                if wait_count % 30 == 0:  # Every 30 seconds
-                    print(f'Still waiting for batch... Waited {wait_count} seconds')
-                time.sleep(1)
-                batch = get_batch()
 
-            loss = GRPO_step(batch)
-            engine.backward(loss)
-            engine.step()
+        loss = GRPO_step(batch)
+        engine.backward(loss)
+        engine.step()
 
-            if is_main_process:
-                progress.set_description(f"Loss: {loss.item():.6f}")
+        if dist.get_rank() == 0:
+            progress.set_description(f"Loss: {loss.item():.6f}")
 
-            # Make sure dist is initialized before using barriers
-            if dist.is_initialized():
-                if step % gen_update_steps == 0:
-                    dist.barrier()
-                    if dist.get_rank() == 0:
-                        print('[TRAINING PROC] sending latest state_dict ...')
-                        state_dict = engine.module.state_dict()
-                        Q.put(state_dict)
-                        print('[TRAINING PROC] send state_dict ok!')
-                    dist.barrier()
+        if step % gen_update_steps == 0:
+            dist.barrier()
+            if dist.get_rank() == 0:
+                print('[TRAINING PROC] sending latest state_dict ...')
+                state_dict = engine.module.state_dict()
+                Q.put(state_dict)
+                print('[TRAINING PROC] send state_dict ok!')
+            dist.barrier()
 
-                if step % save_steps == 0:
-                    dist.barrier()
-                    if dist.get_rank() == 0:
-                        print('saving model')
-                        save_name = f"./checkpoints/step_{step}"
-                        state_dict = engine.module.state_dict()
-                        state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
-                        engine.module.save_pretrained(save_name, state_dict=state_dict)
-                        tokenizer.save_pretrained(save_name)
-                    dist.barrier()
-            else:
-                # Handle non-distributed case
-                if step % gen_update_steps == 0:
-                    print('[TRAINING PROC] sending latest state_dict ...')
-                    state_dict = engine.module.state_dict()
-                    Q.put(state_dict)
-                    print('[TRAINING PROC] send state_dict ok!')
-
-                if step % save_steps == 0:
-                    print('saving model')
-                    save_name = f"./checkpoints/step_{step}"
-                    state_dict = engine.module.state_dict()
-                    state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
-                    engine.module.save_pretrained(save_name, state_dict=state_dict)
-                    tokenizer.save_pretrained(save_name)
-                    
-        except Exception as e:
-            print(f"Error in training loop at step {step}: {e}")
-            # Sleep a bit before continuing
-            time.sleep(5)
-            continue
+        if step % save_steps == 0:
+            dist.barrier()
+            if dist.get_rank() == 0:
+                print('saving model')
+                save_name = f"./step_{step}"
+                state_dict = engine.module.state_dict()
+                state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
+                engine.module.save_pretrained(save_name, state_dict=state_dict)
+                tokenizer.save_pretrained(save_name)
+            dist.barrier()
