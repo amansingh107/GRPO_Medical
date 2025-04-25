@@ -7,8 +7,37 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from tqdm import tqdm
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
+# Path configuration - adjust these to match your remote server's paths
+model_paths = [
+    "/data2/Qwen/Qwen2.5-3B",
+    "/home/surajracha/aman/models/Qwen2.5-3B",  # Alternative path
+    "./models/Qwen2.5-3B"                       # Local relative path
+]
 
-model_path = "/data2/Qwen/Qwen2.5-3B"
+# Find first valid model path
+model_path = None
+for path in model_paths:
+    if os.path.exists(path):
+        model_path = path
+        print(f"Using model path: {model_path}")
+        break
+
+if model_path is None:
+    print("No valid model path found. Will attempt to download from Hugging Face.")
+    model_path = "Qwen/Qwen2.5-3B"
+
+# Choose available GPU for generation
+gen_device = 0  # Default to first GPU
+# Check available GPUs
+if torch.cuda.is_available():
+    num_gpus = torch.cuda.device_count()
+    print(f"Found {num_gpus} GPUs")
+    if num_gpus > 1:
+        gen_device = 1  # Use second GPU if available
+    else:
+        gen_device = 0  # Use the only GPU
+
+print(f"Using GPU {gen_device} for generation")
 gen_device = 1    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 1000
