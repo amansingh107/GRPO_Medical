@@ -35,17 +35,59 @@ if __name__ == '__main__':
     import bottle, threading, queue
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-    # ✅ Set model path to local directory
+    # Path to the model - adjust this to your remote machine's path
     model_path = "/data2/Qwen/Qwen2.5-3B"
-
-    # ✅ Load model from local path with correct flags
-    ref_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16,
-        _attn_implementation="sdpa",
-        trust_remote_code=True,      # ✅ Required for custom/model-specific code
-        local_files_only=True        # ✅ Do not try to fetch from HuggingFace hub
-    ).to('cuda')
+    
+    # Try alternative paths if the primary path doesn't exist
+    alternative_paths = [
+        "/home/surajracha/aman/models/Qwen2.5-3B",  # Example alternative path
+        "./models/Qwen2.5-3B",                      # Local relative path
+    ]
+    
+    # Find the first valid path or download from Hugging Face if none exist
+    valid_path = None
+    if os.path.exists(model_path):
+        valid_path = model_path
+    else:
+        for path in alternative_paths:
+            if os.path.exists(path):
+                valid_path = path
+                break
+    
+    try:
+        if valid_path:
+            print(f"Loading model from local path: {valid_path}")
+            ref_model = AutoModelForCausalLM.from_pretrained(
+                valid_path,
+                torch_dtype=torch.bfloat16,
+                _attn_implementation="sdpa",
+                trust_remote_code=True,
+                local_files_only=True
+            ).to('cuda')
+        else:
+            print("Local model not found. Attempting to download from Hugging Face...")
+            ref_model = AutoModelForCausalLM.from_pretrained(
+                "Qwen/Qwen2.5-3B",  # This is the HF model ID
+                torch_dtype=torch.bfloat16,
+                _attn_implementation="sdpa",
+                trust_remote_code=True
+            ).to('cuda')
+            print("Model successfully downloaded from Hugging Face")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("\nTrying with explicit file path...")
+        try:
+            # Try with explicit file:// protocol
+            ref_model = AutoModelForCausalLM.from_pretrained(
+                "file://" + (valid_path or model_path),
+                torch_dtype=torch.bfloat16,
+                _attn_implementation="sdpa",
+                trust_remote_code=True,
+                local_files_only=True
+            ).to('cuda')
+        except Exception as nested_e:
+            print(f"Second attempt failed: {nested_e}")
+            raise
 
     ref_model.eval()
     ref_model.requires_grad_(False)
@@ -85,17 +127,35 @@ if __name__ == '__main__':
         if result_queue.empty(): return b'empty'
         return result_queue.get()
 
-    def run_server(): bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+    def run_server(): 
+        try:
+            bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+        except Exception as e:
+            print(f"Error starting server: {e}")
+            # Try alternative port if 59875 is in use
+            try:
+                print("Attempting to use alternative port 59876...")
+                bottle.run(app, host='0.0.0.0', port=59876, server='tornado')
+            except Exception as e2:
+                print(f"Failed to start server on alternative port: {e2}")
+
+    print("Starting reference server...")
     threading.Thread(target=run_server, daemon=False).start()
+    print("Server thread started")
 
     while True:
-        d = raw_queue.get()
-        prompt_length = d['base']['plen']
-        with torch.inference_mode():
-            per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
-        per_token_logps = per_token_logps[:, prompt_length - 1:]
-        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']),
-                tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
-        if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
-        xdata = make_bytes_list(data)
-        result_queue.put(xdata)
+        try:
+            d = raw_queue.get()
+            prompt_length = d['base']['plen']
+            with torch.inference_mode():
+                per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
+            per_token_logps = per_token_logps[:, prompt_length - 1:]
+            data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']),
+                    tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
+            if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
+            xdata = make_bytes_list(data)
+            result_queue.put(xdata)
+        except Exception as e:
+            print(f"Error processing queue item: {e}")
+            # Continue processing even if one item fails
+            continue
