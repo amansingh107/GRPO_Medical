@@ -51,9 +51,9 @@ compute_gen_logps = True
 clip_param = 0.2
 
 # Reference server configuration
-ref_server = "http://localhost:59875"
+ref_server = "http://0.0.0.0:59875/"
 # Also try alternative port if needed
-alternative_ref_server = "http://localhost:59876"
+alternative_ref_server = "http://0.0.0.0:59875/"
 
 # Import utility functions
 try:
