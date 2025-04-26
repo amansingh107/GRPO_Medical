@@ -40,8 +40,8 @@ if __name__ == '__main__':
     
     # Try alternative paths if the primary path doesn't exist
     alternative_paths = [
-        "/home/surajracha/aman/models/Qwen2.5-3B",  # Example alternative path
-        "./models/Qwen2.5-3B",                      # Local relative path
+        "/home/surajracha/aman/models/Qwen2.5-7B",  # Example alternative path
+        "./models/Qwen2.5-7B",                      # Local relative path
     ]
     
     # Find the first valid path or download from Hugging Face if none exist
@@ -67,7 +67,7 @@ if __name__ == '__main__':
         else:
             print("Local model not found. Attempting to download from Hugging Face...")
             ref_model = AutoModelForCausalLM.from_pretrained(
-                "Qwen/Qwen2.5-3B",  # This is the HF model ID
+                "Qwen/Qwen2.5-7B",  # This is the HF model ID
                 torch_dtype=torch.bfloat16,
                 _attn_implementation="sdpa",
                 trust_remote_code=True

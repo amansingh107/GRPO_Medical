@@ -10,9 +10,9 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 # Path configuration - adjust these to match your remote server's paths
 model_paths = [
-    "/data2/Qwen/Qwen2.5-3B",
+    "/data2/Qwen/Qwen2.5-7B",
     "/home/surajracha/aman/models/Qwen2.5-7B",  # Alternative path
-    "./models/Qwen2.5-3B"                       # Local relative path
+    "./models/Qwen2.5-7B"                       # Local relative path
 ]
 
 # Find first valid model path
@@ -25,7 +25,7 @@ for path in model_paths:
 
 if model_path is None:
     print("No valid model path found. Will attempt to download from Hugging Face.")
-    model_path = "Qwen/Qwen2.5-3B"
+    model_path = "Qwen/Qwen2.5-7B"
 
 # Choose available GPU for generation
 gen_device = 0  # Default to first GPU
@@ -178,17 +178,8 @@ def gen_worker(Q, physics_device):
 
 
     def gen_samples(inputs):
-        start_time = time.time()
         prompts = [x["Q"] for x in inputs]
-        
         answers, ans_token_ids = gen_answers(prompts)
-        if not answers:  # Skip if generation failed
-            return None, None, None, None
-            
-        # If generation takes too long, return what we have
-        if time.time() - start_time > max_time:
-            print(f"Generation took too long ({time.time() - start_time:.2f}s), returning partial results")
-            
         rewards = []
         for i, inp in enumerate(inputs):
             for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
