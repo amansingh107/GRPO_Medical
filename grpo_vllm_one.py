@@ -133,7 +133,7 @@ def gen_worker(Q, physics_device):
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
 
     from datasets import load_dataset
-    dataset = load_dataset("ruslanmv/ai-medical-chatbot", split="train")
+    dataset = load_dataset("openai/gsm8k", "main", split="train")
     QAs = [{'Q': item['Patient'], 'A': item['Doctor']} for item in dataset]
     
     system_prompt = """You are a medical assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
