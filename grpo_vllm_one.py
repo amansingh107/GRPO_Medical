@@ -50,7 +50,7 @@ gen_update_steps = 16
 save_steps = 200
 compute_gen_logps = True
 clip_param = 0.2
-ref_server = "http://localhost:59875"
+ref_server = " http://0.0.0.0:59875/"
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
 
 ds_config = {
@@ -169,17 +169,8 @@ def gen_worker(Q, physics_device):
 
 
     def gen_samples(inputs):
-        start_time = time.time()
         prompts = [x["Q"] for x in inputs]
-        
         answers, ans_token_ids = gen_answers(prompts)
-        if not answers:  # Skip if generation failed
-            return None, None, None, None
-            
-        # If generation takes too long, return what we have
-        if time.time() - start_time > max_time:
-            print(f"Generation took too long ({time.time() - start_time:.2f}s), returning partial results")
-            
         rewards = []
         for i, inp in enumerate(inputs):
             for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
