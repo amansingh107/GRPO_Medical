@@ -8,38 +8,8 @@ import torch.multiprocessing as mp
 from tqdm import tqdm
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-# Path configuration - adjust these to match your remote server's paths
-model_paths = [
-    "/data2/Qwen/Qwen2.5-7B",
-    "/home/surajracha/aman/models/Qwen2.5-7B",  # Alternative path
-    "./models/Qwen2.5-7B"                       # Local relative path
-]
-
-# Find first valid model path
-model_path = None
-for path in model_paths:
-    if os.path.exists(path):
-        model_path = path
-        print(f"Using model path: {model_path}")
-        break
-
-if model_path is None:
-    print("No valid model path found. Will attempt to download from Hugging Face.")
-    model_path = "Qwen/Qwen2.5-7B"
-
-# Choose available GPU for generation
-gen_device = 0  # Default to first GPU
-# Check available GPUs
-if torch.cuda.is_available():
-    num_gpus = torch.cuda.device_count()
-    print(f"Found {num_gpus} GPUs")
-    if num_gpus > 1:
-        gen_device = 1  # Use second GPU if available
-    else:
-        gen_device = 0  # Use the only GPU
-
-print(f"Using GPU {gen_device} for generation")
-
+model_path = "/data2/Qwen/Qwen2.5-7B"
+gen_device = 4    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 1000
 Q_batch_size = 5
@@ -49,18 +19,8 @@ gen_update_steps = 16
 save_steps = 200
 compute_gen_logps = True
 clip_param = 0.2
-
-# Reference server configuration
-ref_server = "http://0.0.0.0:59875/"
-# Also try alternative port if needed
-alternative_ref_server = "http://0.0.0.0:59875/"
-
-# Import utility functions
-try:
-    from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
-except ImportError:
-    print("Could not import from ref_server.py. Make sure it's in the same directory.")
-    sys.exit(1)
+ref_server = "http://localhost:59875"
+from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
 
 ds_config = {
     "train_micro_batch_size_per_gpu": train_batch_size,
@@ -142,10 +102,10 @@ def gen_worker(Q, physics_device):
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
 
     from datasets import load_dataset
-    dataset = load_dataset("ruslanmv/ai-medical-chatbot", split="train")
-    QAs = [{'Q': item['Patient'], 'A': item['Doctor']} for item in dataset]
+    dataset = load_dataset("openai/gsm8k", "main", split="train")
+    QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
     
-    system_prompt = """You are a medical assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+    system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
     The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
     def gen_answers(prompts):
         tip_text = []
