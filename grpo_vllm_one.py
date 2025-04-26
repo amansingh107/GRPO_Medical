@@ -145,7 +145,7 @@ def gen_worker(Q, physics_device):
     dataset = load_dataset("ruslanmv/ai-medical-chatbot", split="train")
     QAs = [{'Q': item['Patient'], 'A': item['Doctor']} for item in dataset]
     
-    system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+    system_prompt = """You are a medical assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
     The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
     def gen_answers(prompts):
         tip_text = []
@@ -178,8 +178,17 @@ def gen_worker(Q, physics_device):
 
 
     def gen_samples(inputs):
+        start_time = time.time()
         prompts = [x["Q"] for x in inputs]
+        
         answers, ans_token_ids = gen_answers(prompts)
+        if not answers:  # Skip if generation failed
+            return None, None, None, None
+            
+        # If generation takes too long, return what we have
+        if time.time() - start_time > max_time:
+            print(f"Generation took too long ({time.time() - start_time:.2f}s), returning partial results")
+            
         rewards = []
         for i, inp in enumerate(inputs):
             for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
