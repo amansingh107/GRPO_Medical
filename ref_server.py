@@ -36,7 +36,7 @@ if __name__ == '__main__':
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
     # Path to the model - adjust this to your remote machine's path
-    model_path = "/data2/Qwen/Qwen2.5-3B"
+    model_path = "/data2/Qwen/Qwen2.5-7B"
     
     # Try alternative paths if the primary path doesn't exist
     alternative_paths = [

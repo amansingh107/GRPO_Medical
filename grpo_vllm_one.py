@@ -11,7 +11,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 # Path configuration - adjust these to match your remote server's paths
 model_paths = [
     "/data2/Qwen/Qwen2.5-3B",
-    "/home/surajracha/aman/models/Qwen2.5-3B",  # Alternative path
+    "/home/surajracha/aman/models/Qwen2.5-7B",  # Alternative path
     "./models/Qwen2.5-3B"                       # Local relative path
 ]
 
